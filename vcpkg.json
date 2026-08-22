@@ -1,0 +1,12 @@
+{
+  "$schema": "https://raw.githubusercontent.com/microsoft/vcpkg-tool/main/docs/vcpkg.schema.json",
+  "name": "fortify-attribute-fix-ng",
+  "version-string": "1.0.0.0",
+  "dependencies": [
+    "spdlog",
+    "rapidcsv",
+    "directxtk",
+    "skse-mcp"
+  ],
+  "builtin-baseline": "74e6536215718009aae747d86d84b78376bf9e09"
+}
