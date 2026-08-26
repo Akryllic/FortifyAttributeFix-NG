@@ -70,7 +70,7 @@ include(${COMMONLIB_SRC_DIR}/cmake/CommonLibSSE.cmake)
 
 add_commonlibsse_plugin(
   ${PROJECT_NAME}
-  AUTHOR AUTHOR_NAME
+  AUTHOR ${AUTHOR_NAME}
   SOURCES ${headers} ${sources}
 )
 
