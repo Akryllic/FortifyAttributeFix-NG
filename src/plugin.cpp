@@ -40,7 +40,8 @@ SKSEPluginLoad(const SKSE::LoadInterface* a_skse)
     SetupLog();
     logger::info("Plugin loaded, {} build", Diagnostics::BuildName());
 
-    SKSE::Init(a_skse);
+    // Sized once for every write_call, since a later request is ignored. Logging stays with SetupLog, which Init would otherwise replace. ItzIvy05/GoToBed/src/plugin.cpp:15
+    SKSE::Init(a_skse, { .log = false, .trampoline = true, .trampolineSize = 1 << 7 });
 
     const auto messaging = SKSE::GetMessagingInterface();
     if (!messaging || !messaging->RegisterListener(OnMessage)) {

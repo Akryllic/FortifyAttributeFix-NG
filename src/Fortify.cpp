@@ -518,8 +518,6 @@ namespace Fortify
 
     void Install()
     {
-        SKSE::AllocTrampoline(1 << 7);
-
         // Hooking what is verified rather than the original mod's addresses, four of which carry an SE id in VariantID's VR slot and resolve to a raw module offset there
         ResolvePublishedSites();
         ScanCallSitesNow();

@@ -106,7 +106,7 @@ namespace
 
         ImGuiMCP::SeparatorText("Regeneration");
 
-        // Three per attribute countdowns the engine holds regeneration off for (RE/H/HighProcessData.h:192-194)
+        // Three per attribute countdowns the engine holds regeneration off for (RE/H/HighProcessData.h:193-195)
         auto* process = player->GetActorRuntimeData().currentProcess;
         if (!process || !process->high) {
             ImGuiMCP::TextDisabled("no high process, the delays are not readable here");
