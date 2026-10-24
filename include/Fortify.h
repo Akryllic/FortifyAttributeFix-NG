@@ -5,7 +5,7 @@
 
 /// The fix itself.
 /// Skyrim stores a current attribute as base + permanent + temporary + damage, where damage is a negative number.
-/// A fortify raises the temporary modifier, so it raises current as well as maximum.
+/// A fortify raises a modifier, the permanent one on the player and the temporary one on an NPC, so it raises current as well as maximum.
 /// When it expires the maximum drops but the damage modifier does not move, and if accumulated damage now exceeds the maximum the current value computes below zero and the actor dies.
 namespace Fortify
 {
@@ -27,8 +27,8 @@ namespace Fortify
     /// @brief Re-read the mode and the actor scope from the INI.
     void LoadSettings();
 
-    /// @brief Clear the per-session state. Call on kPostLoadGame and kNewGame.
-    void OnGameLoaded();
+    /// @brief Clear the per-session state, and after a save loads re-read Survival Mode Improved's penalties. Call on kPostLoadGame and kNewGame.
+    void OnGameLoaded(bool a_fromSave);
 
     [[nodiscard]] Mode CurrentMode();
     void SetMode(Mode a_mode);

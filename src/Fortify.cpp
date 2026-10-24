@@ -46,6 +46,11 @@ namespace
 
     thread_local DamageChange t_lastDamage{};
 
+    std::atomic_bool g_survivalLoaded{ false };
+    std::atomic<float> g_penaltySeen[3]{};
+    std::atomic_bool g_penaltyKnown[3]{};
+    std::atomic_bool g_penaltyFortified[3]{};
+
 #ifdef FF_DEBUG_PANEL
     // Samples left in an armed state burst, from the Debug page
     std::atomic_int32_t g_stateLogRemaining{ 0 };
@@ -249,6 +254,86 @@ namespace
         return std::max(0.0f, a_after) - std::max(0.0f, a_before);
     }
 
+    struct PenaltyTrack
+    {
+        RE::ActorValue variable{ RE::ActorValue::kNone };
+        std::atomic<float>* seen{ nullptr };
+        std::atomic_bool* known{ nullptr };
+        std::atomic_bool* fortified{ nullptr };
+    };
+
+    // Survival Mode Improved keeps each attribute's penalty in a variable (colinswrath/Survival-Mode-Improved-SKSE/include/Settings/FormLoader.h:63-64,139-140,211-212)
+    [[nodiscard]] PenaltyTrack TrackFor(RE::ActorValue a_av)
+    {
+        switch (a_av) {
+        case RE::ActorValue::kHealth:
+            return { RE::ActorValue::kVariable04, &g_penaltySeen[0], &g_penaltyKnown[0], &g_penaltyFortified[0] };
+        case RE::ActorValue::kStamina:
+            return { RE::ActorValue::kVariable02, &g_penaltySeen[1], &g_penaltyKnown[1], &g_penaltyFortified[1] };
+        case RE::ActorValue::kMagicka:
+            return { RE::ActorValue::kVariable03, &g_penaltySeen[2], &g_penaltyKnown[2], &g_penaltyFortified[2] };
+        default:
+            return {};
+        }
+    }
+
+    // A resize can still be pending across a save or a mode change, and holding one real cold step instead costs little
+    void AssumeResizePending()
+    {
+        for (auto& fortified : g_penaltyFortified) {
+            fortified = true;
+        }
+    }
+
+    void ForgetPenalties()
+    {
+        for (auto& known : g_penaltyKnown) {
+            known = false;
+        }
+        AssumeResizePending();
+    }
+
+    struct PenaltyLine
+    {
+        float before{ 0.0f };
+        float after{ 0.0f };
+        std::atomic_bool* fortified{ nullptr };
+    };
+
+    // The penalty is applied to the permanent modifier, where the player's fortifies land too, so zero is measured from minus it (colinswrath/Survival-Mode-Improved-SKSE/include/AvPenaltyManager.h:282)
+    [[nodiscard]] PenaltyLine SurvivalPenalty(RE::Actor* a_actor, MOD a_mod, RE::ActorValue a_av, float a_delta)
+    {
+        const auto track = TrackFor(a_av);
+        if (!g_survivalLoaded.load() || !track.seen || !a_actor->IsPlayerRef()) {
+            return {};
+        }
+
+        const float now = a_actor->AsActorValueOwner()->GetActorValue(track.variable);
+        auto* fortified = now > 0.0f ? track.fortified : nullptr;
+
+        // Its maximum counts the temporary modifier too, so a temporary fortify still resizes the penalty (colinswrath/Survival-Mode-Improved-SKSE/include/AvPenaltyManager.h:232-236)
+        if (a_mod != MOD::kPermanent) {
+            return { 0.0f, 0.0f, fortified };
+        }
+
+        const float last = track.seen->exchange(now);
+
+        // Unseen since a load or a mode change, so the variable may have moved without a call passing through here
+        if (!track.known->exchange(true)) {
+            return { now, now, fortified };
+        }
+
+        // The new penalty is written before the call that applies it, so a variable that moved by exactly this delta is that call (colinswrath/Survival-Mode-Improved-SKSE/include/AvPenaltyManager.h:275,281-282)
+        if (std::abs(last - (now + a_delta)) < 0.001f) {
+            // The first growth after a fortify is the penalty resizing to the fortified maximum, so it is held as part of that fortify (colinswrath/Survival-Mode-Improved-SKSE/include/AvPenaltyManager.h:257,272)
+            if (std::abs(a_delta) >= 0.001f && track.fortified->exchange(false) && a_delta < 0.0f) {
+                return { now + a_delta, now + a_delta };
+            }
+            return { now + a_delta, now };
+        }
+        return { now, now, fortified };
+    }
+
 #ifdef FF_DEBUG_PANEL
     // Logged before any early return, so a kDamage regeneration tick shows up as readily as a fortify
     void LogState(RE::Actor* a_actor, MOD a_mod, RE::ActorValue a_av, float a_delta)
@@ -326,6 +411,10 @@ namespace
         LogState(a_actor, a_mod, a_av, a_delta);
 
         if (g_mode.load() == Fortify::Mode::kOff) {
+            // Still watched while off, read only, so leaving Off does not start from a stale penalty
+            if (a_mod == MOD::kPermanent) {
+                static_cast<void>(SurvivalPenalty(a_actor, a_mod, a_av, a_delta));
+            }
             return false;
         }
 
@@ -347,7 +436,8 @@ namespace
         }
 
         const float before = slots->modifiers[a_mod];
-        const float rise = FortifyPart(before, before + a_delta);
+        const auto penalty = SurvivalPenalty(a_actor, a_mod, a_av, a_delta);
+        const float rise = FortifyPart(before + penalty.before, before + a_delta + penalty.after);
 
         ++g_seen;
         if (std::abs(rise) < 0.001f) {
@@ -355,10 +445,14 @@ namespace
             return false;
         }
 
-        // Damaging by the amount about to be added holds current already, so correcting it again takes the rise twice (colinswrath/Survival-Mode-Improved-SKSE/include/AvPenaltyManager.h:277-282)
-        if (rise > 0.0f && previous.actor == a_actor && previous.av == a_av && std::abs(previous.delta + a_delta) < 0.001f) {
+        // A damage change of the same size right before a rise means the caller manages current, so correcting it again takes the rise twice (colinswrath/Survival-Mode-Improved-SKSE/include/AvPenaltyManager.h:277-282)
+        if (rise > 0.0f && previous.actor == a_actor && previous.av == a_av && std::abs(std::abs(previous.delta) - std::abs(a_delta)) < 0.001f) {
             ++g_precompensated;
             return false;
+        }
+
+        if (rise > 0.0f && penalty.fortified) {
+            penalty.fortified->store(true);
         }
 
         auto* owner = a_actor->AsActorValueOwner();
@@ -676,6 +770,10 @@ namespace Fortify
             logger::warn("Fortify: no call sites hooked. The effect vtables are carrying this alone.");
         }
 
+        // Detected by module, as aers/EngineFixesSkyrim64/src/fixes/bslightingshader_parallax_bug.h:48 does
+        g_survivalLoaded = REX::W32::GetModuleHandleA("SurvivalModeImproved.dll") != nullptr;
+        logger::info("Fortify: Survival Mode Improved {}.", g_survivalLoaded.load() ? "loaded, the player's fortifies are measured above its penalties" : "not loaded");
+
 #ifdef FF_DEBUG_PANEL
         // Only the debug build polls, and only while a burst is armed. The published offsets here are SE and AE
         if (!REL::Module::IsVR()) {
@@ -686,9 +784,23 @@ namespace Fortify
 #endif
     }
 
-    void OnGameLoaded()
+    void OnGameLoaded(bool a_fromSave)
     {
         t_lastDamage = {};
+        ForgetPenalties();
+
+        auto* player = a_fromSave && g_survivalLoaded.load() ? RE::PlayerCharacter::GetSingleton() : nullptr;
+        if (!player) {
+            return;
+        }
+
+        // SMI only ever applies the change from its saved variable, so the saved permanent modifier already carries it and its next call starts from the variable as it reads now (colinswrath/Survival-Mode-Improved-SKSE/include/AvPenaltyManager.h:271,275,282)
+        constexpr RE::ActorValue POOLED[]{ RE::ActorValue::kHealth, RE::ActorValue::kStamina, RE::ActorValue::kMagicka };
+        for (const auto av : POOLED) {
+            const auto track = TrackFor(av);
+            track.seen->store(player->AsActorValueOwner()->GetActorValue(track.variable));
+            track.known->store(true);
+        }
     }
 
     void LoadSettings()
@@ -713,6 +825,7 @@ namespace Fortify
     void SetMode(Mode a_mode)
     {
         g_mode = a_mode;
+        AssumeResizePending();
         logger::info("Fortify: mode set to {} from the menu.", static_cast<int>(a_mode));
         LogStats();
     }

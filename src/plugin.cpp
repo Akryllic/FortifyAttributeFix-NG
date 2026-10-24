@@ -26,7 +26,7 @@ namespace
         case SKSE::MessagingInterface::kNewGame:
             Settings::Load();
             Fortify::LoadSettings();
-            Fortify::OnGameLoaded();
+            Fortify::OnGameLoaded(a_message->type == SKSE::MessagingInterface::kPostLoadGame);
             break;
 
         default:
