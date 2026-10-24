@@ -29,6 +29,16 @@ namespace
     std::atomic_uint64_t g_corrected{ 0 };
     std::atomic_uint64_t g_restores{ 0 };
     std::atomic_uint64_t g_deaths{ 0 };
+    std::atomic_uint64_t g_precompensated{ 0 };
+
+    struct DamageChange
+    {
+        RE::Actor* actor{ nullptr };
+        RE::ActorValue av{ RE::ActorValue::kNone };
+        float delta{ 0.0f };
+    };
+
+    thread_local DamageChange t_lastDamage{};
 
 #ifdef FF_DEBUG_PANEL
     // Samples left in an armed state burst, from the Debug page
@@ -198,12 +208,18 @@ namespace
         if (g_mode.load() == Fortify::Mode::kOff) {
             return false;
         }
-        if (a_mod != MOD::kPermanent && a_mod != MOD::kTemporary) {
-            return false;
-        }
 
         auto* slots = SlotsFor(a_actor, a_av);
         if (!slots) {
+            return false;
+        }
+
+        const auto previous = std::exchange(t_lastDamage, {});
+        if (a_mod == MOD::kDamage) {
+            t_lastDamage = { a_actor, a_av, a_delta };
+            return false;
+        }
+        if (a_mod != MOD::kPermanent && a_mod != MOD::kTemporary) {
             return false;
         }
         if (g_playerOnly.load() && !a_actor->IsPlayerRef()) {
@@ -216,6 +232,12 @@ namespace
         ++g_seen;
         if (std::abs(rise) < 0.001f) {
             ++g_restores;
+            return false;
+        }
+
+        // Damaging by the amount about to be added holds current already, so correcting it again takes the rise twice (colinswrath/Survival-Mode-Improved-SKSE/include/AvPenaltyManager.h:277-282)
+        if (rise > 0.0f && previous.actor == a_actor && previous.av == a_av && std::abs(previous.delta + a_delta) < 0.001f) {
+            ++g_precompensated;
             return false;
         }
 
@@ -268,6 +290,7 @@ namespace
                 auto* owner = a_actor->AsActorValueOwner();
                 owner->ModActorValue(MOD::kDamage, a_av, ARM_NUDGE);
                 owner->ModActorValue(MOD::kDamage, a_av, -ARM_NUDGE);
+                t_lastDamage = {};
             }
         }
 
@@ -512,8 +535,8 @@ namespace Fortify
 
     void LogStats()
     {
-        logger::info("Fortify: {} modifier changes seen, {} corrected, {} left alone, {} deaths prevented.",
-                     g_seen.load(), g_corrected.load(), g_restores.load(), g_deaths.load());
+        logger::info("Fortify: {} modifier changes seen, {} corrected, {} left alone, {} already held by the caller, {} deaths prevented.",
+                     g_seen.load(), g_corrected.load(), g_restores.load(), g_precompensated.load(), g_deaths.load());
     }
 
     void Install()
@@ -546,6 +569,7 @@ namespace Fortify
 
     void OnGameLoaded()
     {
+        t_lastDamage = {};
     }
 
     void LoadSettings()
@@ -586,6 +610,6 @@ namespace Fortify
 
     Stats GetStats()
     {
-        return { g_seen.load(), g_corrected.load(), g_restores.load(), g_deaths.load() };
+        return { g_seen.load(), g_corrected.load(), g_restores.load(), g_deaths.load(), g_precompensated.load() };
     }
 }

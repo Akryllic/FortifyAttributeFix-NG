@@ -50,6 +50,7 @@ namespace
         ImGuiMCP::Text("Modifier changes seen   %llu", s.seen);
         ImGuiMCP::Text("Corrected               %llu", s.corrected);
         ImGuiMCP::Text("Restores left alone     %llu", s.restoresLeftAlone);
+        ImGuiMCP::Text("Held by the caller      %llu", s.precompensated);
         ImGuiMCP::TextColored(s.deathsPrevented > 0 ? PanelUI::GOOD : PanelUI::BAD, "Deaths prevented        %llu",
                               s.deathsPrevented);
 

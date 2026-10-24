@@ -45,6 +45,7 @@ namespace Fortify
         std::uint64_t corrected{ 0 };
         std::uint64_t restoresLeftAlone{ 0 };
         std::uint64_t deathsPrevented{ 0 };
+        std::uint64_t precompensated{ 0 };
     };
 
     [[nodiscard]] Stats GetStats();
