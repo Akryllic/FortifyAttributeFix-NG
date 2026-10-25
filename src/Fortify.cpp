@@ -45,6 +45,7 @@ namespace
     };
 
     thread_local DamageChange t_lastDamage{};
+    thread_local DamageChange t_topUp{};
 
     std::atomic_bool g_survivalLoaded{ false };
     std::atomic<float> g_penaltySeen[3]{};
@@ -72,6 +73,7 @@ namespace
     std::uintptr_t g_publishedSites[5]{};
     std::vector<Fortify::CallSite> g_callSites;
     std::size_t g_installed{ 0 };
+    std::atomic_size_t g_topUpSite{ MAX_CALL_SITES };
 
     struct ModuleHit
     {
@@ -401,8 +403,38 @@ namespace
     void LogState(RE::Actor*, MOD, RE::ActorValue, float) {}
 #endif
 
+    // Before a fortify lapses the engine tops current up when it would leave Health at 1 or less or Magicka and Stamina below 0, through one call site that does nothing else (id 35084 +0x9E, 1.6.1170 and 1.7.104)
+    [[nodiscard]] float LapseTopUp(RE::Actor* a_actor, RE::ActorValue a_av, float a_delta, const DamageChange& a_topUp,
+                                   float a_current)
+    {
+        if (a_delta >= 0.0f || a_topUp.actor != a_actor || a_topUp.av != a_av || a_topUp.delta <= 0.0f) {
+            return 0.0f;
+        }
+        if (a_av == RE::ActorValue::kHealth) {
+            const bool matches = std::abs(a_topUp.delta - 1.0f) < 0.001f && a_current - a_topUp.delta <= 1.0f - a_delta;
+            return matches ? a_topUp.delta : 0.0f;
+        }
+        return std::abs(a_current + a_delta) < 0.001f ? a_topUp.delta : 0.0f;
+    }
+
+    // Then, for the player's Health only, the effect itself restores enough that a lethal lapse leaves exactly 1 (id 35086 +0x110, 1.6.1170 and 1.7.104)
+    [[nodiscard]] float EngineLift(RE::Actor* a_actor, MOD a_mod, RE::ActorValue a_av, float a_delta,
+                                   const DamageChange& a_previous, float a_current)
+    {
+        if (a_av != RE::ActorValue::kHealth || a_mod != MOD::kPermanent || a_delta >= 0.0f || !a_actor->IsPlayerRef()) {
+            return 0.0f;
+        }
+        if (a_previous.actor != a_actor || a_previous.av != a_av || a_previous.delta <= 0.0f) {
+            return 0.0f;
+        }
+        if (std::abs(a_current + a_delta - 1.0f) >= 0.001f || a_current - a_previous.delta + a_delta > 0.0f) {
+            return 0.0f;
+        }
+        return a_previous.delta;
+    }
+
     // Returns whether it wrote, so the caller knows to arm regeneration afterwards
-    bool OnModifierChange(RE::Actor* a_actor, MOD a_mod, RE::ActorValue a_av, float a_delta)
+    bool OnModifierChange(RE::Actor* a_actor, MOD a_mod, RE::ActorValue a_av, float a_delta, bool a_topUpSite)
     {
         if (!a_actor) {
             return false;
@@ -425,12 +457,17 @@ namespace
 
         const auto previous = std::exchange(t_lastDamage, {});
         if (a_mod == MOD::kDamage) {
-            t_lastDamage = { a_actor, a_av, a_delta };
+            if (a_topUpSite) {
+                t_topUp = { a_actor, a_av, a_delta };
+            } else {
+                t_lastDamage = { a_actor, a_av, a_delta };
+            }
             return false;
         }
         if (a_mod != MOD::kPermanent && a_mod != MOD::kTemporary) {
             return false;
         }
+        const auto topUp = std::exchange(t_topUp, {});
         if (g_playerOnly.load() && !a_actor->IsPlayerRef()) {
             return false;
         }
@@ -459,16 +496,27 @@ namespace
         const float damage = slots->modifiers[MOD::kDamage];
         const float maxBefore = owner->GetBaseActorValue(a_av) + slots->modifiers[MOD::kPermanent] +
                                 slots->modifiers[MOD::kTemporary];
+        const float current = maxBefore + damage;
+        const float effectLift = EngineLift(a_actor, a_mod, a_av, a_delta, previous, current);
+        const float lift = effectLift + LapseTopUp(a_actor, a_av, a_delta, topUp, current - effectLift);
 
-        const Snapshot before_{ slots->modifiers[MOD::kPermanent], slots->modifiers[MOD::kTemporary], damage,
-                                maxBefore + damage };
-        const float wanted = WantedDamage(before_, maxBefore + rise);
+        const Snapshot before_{ slots->modifiers[MOD::kPermanent], slots->modifiers[MOD::kTemporary], damage - lift,
+                                current - lift };
+        float wanted = WantedDamage(before_, maxBefore + rise);
 
-        if (a_av == RE::ActorValue::kHealth && before_.current > 0.0f && before_.current + a_delta <= 0.0f) {
+        if (lift > 0.0f) {
+            // Never below what the engine leaves, because the part of a lapse below zero stays vanilla
+            wanted = std::max(wanted, damage);
+            logger::info("{} av {}: max {:.1f} -> {:.1f}, current {:.1f} -> {:.1f}, the engine had topped it up to {:.1f} first.",
+                         Util::Who(a_actor), static_cast<int>(a_av), maxBefore, maxBefore + a_delta, before_.current,
+                         maxBefore + a_delta + wanted, current);
+        }
+
+        if (a_av == RE::ActorValue::kHealth && before_.current > 0.0f && current + a_delta <= 0.0f) {
             ++g_deaths;
             logger::info("{}: max {:.1f} -> {:.1f}, current {:.1f} held, vanilla would give {:.1f}. Death prevented.",
                          Util::Who(a_actor), maxBefore, maxBefore + a_delta, before_.current,
-                         before_.current + a_delta);
+                         current + a_delta);
         }
 
         if (std::abs(wanted - damage) < 0.001f) {
@@ -501,7 +549,7 @@ namespace
                 RecordCaller(Index, a_actor, a_mod, a_av, a_delta);
             }
 #endif
-            const bool wrote = OnModifierChange(a_actor, a_mod, a_av, a_delta);
+            const bool wrote = OnModifierChange(a_actor, a_mod, a_av, a_delta, Index == g_topUpSite.load());
             func(a_actor, a_mod, a_av, a_delta, a_source);
 
             // A raw write buys the number without the engine's bookkeeping, so regeneration is never armed. The round trip nets to zero while making two real calls
@@ -770,6 +818,13 @@ namespace Fortify
             logger::warn("Fortify: no call sites hooked. The effect vtables are carrying this alone.");
         }
 
+        for (std::size_t i = 0; i < g_callSites.size() && i < g_installed; ++i) {
+            if (g_callSites[i].hooked && g_callSites[i].address == g_publishedSites[0]) {
+                g_topUpSite = i;
+            }
+        }
+        logger::info("Fortify: lapse top-up site {}.", g_topUpSite.load() < MAX_CALL_SITES ? "hooked" : "not found");
+
         // Detected by module, as aers/EngineFixesSkyrim64/src/fixes/bslightingshader_parallax_bug.h:48 does
         g_survivalLoaded = REX::W32::GetModuleHandleA("SurvivalModeImproved.dll") != nullptr;
         logger::info("Fortify: Survival Mode Improved {}.", g_survivalLoaded.load() ? "loaded, the player's fortifies are measured above its penalties" : "not loaded");
@@ -787,6 +842,7 @@ namespace Fortify
     void OnGameLoaded(bool a_fromSave)
     {
         t_lastDamage = {};
+        t_topUp = {};
         ForgetPenalties();
 
         auto* player = a_fromSave && g_survivalLoaded.load() ? RE::PlayerCharacter::GetSingleton() : nullptr;
