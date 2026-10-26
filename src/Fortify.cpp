@@ -461,14 +461,6 @@ namespace
         slots->modifiers[MOD::kDamage] = wanted;
         InvalidateCached(a_actor, a_av);
         ++g_corrected;
-
-        if (spdlog::should_log(spdlog::level::debug)) {
-            logger::debug("{} av {}: {} {:.1f} -> {:.1f}, fortify part {:.1f}, damage {:.1f} -> {:.1f}",
-                          Util::Who(a_actor), static_cast<int>(a_av),
-                          a_mod == MOD::kPermanent ? "perm" : "temp", before, before + a_delta, rise, damage,
-                          wanted);
-        }
-
         return true;
     }
 
@@ -659,10 +651,6 @@ namespace
 
         logger::info("Fortify: {} call sites of the modifier function in .text, {} of them published by the original.",
                      g_callSites.size(), published);
-        for (const auto& site : g_callSites) {
-            logger::debug("Fortify: call site SkyrimSE.exe+{:X}{}", site.offset,
-                          site.published ? "" : "  (not in the original)");
-        }
         for (const auto site : g_publishedSites) {
             bool real = false;
             for (const auto& found : g_callSites) {

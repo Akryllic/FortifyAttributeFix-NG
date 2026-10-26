@@ -18,7 +18,7 @@ cmake_minimum_required(VERSION 3.21)
 # ---------------------------------------------------------------------------
 set(AUTHOR_NAME "Apodeictic")
 set(PRODUCT_NAME "FortifyAttributeFixNG")
-project(${PRODUCT_NAME} VERSION 1.1.0.0 LANGUAGES CXX)
+project(${PRODUCT_NAME} VERSION 2.0.0.0 LANGUAGES CXX)
 
 # Where the built DLL and everything under data/ is copied after each build.
 # Point this at the MO2 mod folder itself, not the mods root.

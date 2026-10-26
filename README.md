@@ -40,6 +40,9 @@ GPL-3.0. See [LICENSE](LICENSE).
 Portions derive from MIT-licensed work, whose notices stand: `virt-x/FortifyAttributeFix` for the
 published call-site addresses, `shazdeh/Fortify-Attribute-Refill-Fix`, and CommonLibSSE-NG.
 
+The menu compiles in FLICK's API header (`Fuzzlesz/FUCK_API`, GPL-3.0) and Dear ImGui's header (`powerof3/imgui`, MIT),
+pinned in `cmake/ports/flick-api`.
+
 ## Credits
 
 * [FatGerald](https://www.nexusmods.com/skyrimspecialedition/mods/175462) for Fortify Attribute Fix
