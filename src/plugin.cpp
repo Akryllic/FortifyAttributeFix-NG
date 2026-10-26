@@ -1,13 +1,18 @@
 #include "PCH.h"
 
-#include "Diagnostics.h"
 #include "Fortify.h"
-#include "MCP.h"
+#include "Menu.h"
 #include "Settings.h"
 #include "logger.h"
 
 namespace
 {
+#ifdef FF_DEBUG_PANEL
+    constexpr auto BUILD_NAME = "debug";
+#else
+    constexpr auto BUILD_NAME = "release";
+#endif
+
     void OnMessage(SKSE::MessagingInterface::Message* a_message)
     {
         if (!a_message)
@@ -18,8 +23,7 @@ namespace
             Settings::Load();
             Fortify::LoadSettings();
             Fortify::Install();
-            MCP::Register();
-            Diagnostics::Register();
+            Menu::Register();
             break;
 
         case SKSE::MessagingInterface::kPostLoadGame:
@@ -38,7 +42,7 @@ namespace
 SKSEPluginLoad(const SKSE::LoadInterface* a_skse)
 {
     SetupLog();
-    logger::info("Plugin loaded, {} build", Diagnostics::BuildName());
+    logger::info("Plugin loaded, {} build", BUILD_NAME);
 
     // Sized once for every write_call, since a later request is ignored. Logging stays with SetupLog, which Init would otherwise replace. ItzIvy05/GoToBed/src/plugin.cpp:15
     SKSE::Init(a_skse, { .log = false, .trampoline = true, .trampolineSize = 1 << 7 });

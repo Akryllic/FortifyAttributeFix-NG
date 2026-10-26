@@ -24,14 +24,14 @@ cmake --preset release
 cmake --build build/release
 ```
 
-For the debug build, which adds the SKSE Menu Framework Debug page and a PDB:
+For the debug build, which logs per-site and caller counters and ships a PDB:
 
 ```
-cmake --preset release -DFF_DEBUG_PANEL=ON
-cmake --build build/release
+cmake --preset debugpanel
+cmake --build build/debugpanel
 ```
 
-The Debug page is compiled out of the normal build rather than hidden.
+The counters are compiled out of the normal build rather than switched off.
 
 ## License
 
@@ -49,4 +49,4 @@ published call-site addresses, `shazdeh/Fortify-Attribute-Refill-Fix`, and Commo
   reading it
 * [CharmedBaryon](https://github.com/CharmedBaryon/CommonLibSSE-NG) and
   [alandtse](https://github.com/alandtse/CommonLibSSE-NG) for CommonLibSSE-NG
-* [Thiago099](https://www.nexusmods.com/skyrimspecialedition/mods/120352) for SKSE Menu Framework
+* [Fuzzlesz](https://github.com/Fuzzlesz/FUCK_API) for FLICK

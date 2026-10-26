@@ -43,7 +43,7 @@
     {
       "name": "debugpanel",
       "inherits": ["base"],
-      "displayName": "Release with the Debug page",
+      "displayName": "Release with caller counters and PDB",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "RelWithDebInfo",
         "FF_DEBUG_PANEL": "ON"

@@ -3,7 +3,6 @@
 
 #include <algorithm>
 #include <atomic>
-#include <chrono>
 #include <cstring>
 #include <functional>
 #include <mutex>
@@ -52,11 +51,6 @@ namespace
     std::atomic_bool g_penaltyKnown[3]{};
     std::atomic_bool g_penaltyFortified[3]{};
 
-#ifdef FF_DEBUG_PANEL
-    // Samples left in an armed state burst, from the Debug page
-    std::atomic_int32_t g_stateLogRemaining{ 0 };
-#endif
-
     // Left room for more a couple more call sites
     constexpr std::size_t MAX_CALL_SITES = 8;
 
@@ -70,8 +64,17 @@ namespace
     // I'm assuming this is going to be the same for 1.7.X
     constexpr std::size_t EXPECTED_CALL_SITES = 6;
 
+    struct CallSite
+    {
+        std::uintptr_t offset{ 0 };
+        std::uintptr_t address{ 0 };
+        /// One of the five the original mod publishes.
+        bool published{ false };
+        bool hooked{ false };
+    };
+
     std::uintptr_t g_publishedSites[5]{};
-    std::vector<Fortify::CallSite> g_callSites;
+    std::vector<CallSite> g_callSites;
     std::size_t g_installed{ 0 };
     std::atomic_size_t g_topUpSite{ MAX_CALL_SITES };
 
@@ -336,73 +339,6 @@ namespace
         return { now, now, fortified };
     }
 
-#ifdef FF_DEBUG_PANEL
-    // Logged before any early return, so a kDamage regeneration tick shows up as readily as a fortify
-    void LogState(RE::Actor* a_actor, MOD a_mod, RE::ActorValue a_av, float a_delta)
-    {
-        if (g_stateLogRemaining <= 0 || a_actor != RE::PlayerCharacter::GetSingleton()) {
-            return;
-        }
-
-        auto* slots = SlotsFor(a_actor, a_av);
-        if (!slots) {
-            return;
-        }
-        --g_stateLogRemaining;
-
-        auto* process = a_actor->GetActorRuntimeData().currentProcess;
-        auto* high = process ? process->high : nullptr;
-
-        static constexpr const char* SLOT[]{ "perm", "temp", "dmg" };
-        logger::info("state av {} {} {:+.2f} | perm {:.1f} temp {:.1f} dmg {:.1f} cur {:.1f} | delays h {:.2f} s {:.2f} m {:.2f} | {} left",
-                     static_cast<int>(a_av), a_mod <= MOD::kDamage ? SLOT[a_mod] : "?", a_delta,
-                     slots->modifiers[MOD::kPermanent], slots->modifiers[MOD::kTemporary],
-                     slots->modifiers[MOD::kDamage],
-                     a_actor->AsActorValueOwner()->GetActorValue(a_av),
-                     high ? high->healthRegenDelay : -1.0f, high ? high->staminaRegenDelay : -1.0f,
-                     high ? high->magickaRegenDelay : -1.0f, g_stateLogRemaining.load());
-    }
-
-    // All three attributes, not just the one that moved, so a cause nobody has thought of still leaves a fingerprint
-    // My saviour
-    void LogSnapshot(const char* a_why)
-    {
-        auto* player = RE::PlayerCharacter::GetSingleton();
-        if (!player) {
-            return;
-        }
-
-        auto* owner = player->AsActorValueOwner();
-        auto& rt = player->GetActorRuntimeData();
-        auto* process = rt.currentProcess;
-        auto* high = process ? process->high : nullptr;
-
-        const auto line = [&](const char* a_tag, RE::ActorValue a_av, RE::Modifiers& a_slots,
-                              RE::ActorValue a_rate, RE::ActorValue a_mult, float a_delay) {
-            logger::info("snap {} {} base {:.1f} perm {:.1f} temp {:.1f} dmg {:.1f} cur {:.1f} | rate {:.2f} mult {:.1f} delay {:.2f}",
-                         a_why, a_tag, owner->GetBaseActorValue(a_av),
-                         a_slots.modifiers[MOD::kPermanent], a_slots.modifiers[MOD::kTemporary],
-                         a_slots.modifiers[MOD::kDamage], owner->GetActorValue(a_av),
-                         owner->GetActorValue(a_rate), owner->GetActorValue(a_mult), a_delay);
-        };
-
-        line("H", RE::ActorValue::kHealth, rt.healthModifiers, RE::ActorValue::kHealRate,
-             RE::ActorValue::kHealRateMult, high ? high->healthRegenDelay : -1.0f);
-        line("M", RE::ActorValue::kMagicka, rt.magickaModifiers, RE::ActorValue::kMagickaRate,
-             RE::ActorValue::kMagickaRateMult, high ? high->magickaRegenDelay : -1.0f);
-        line("S", RE::ActorValue::kStamina, rt.staminaModifiers, RE::ActorValue::kStaminaRate,
-             RE::ActorValue::kStaminaRateMult, high ? high->staminaRegenDelay : -1.0f);
-
-        logger::info("snap {} | combat {} | high {} | combatHealthRegenMult {:.2f} | paused {}", a_why,
-                     player->IsInCombat(), high != nullptr,
-                     owner->GetActorValue(RE::ActorValue::kCombatHealthRegenMultiply),
-                     RE::UI::GetSingleton() ? RE::UI::GetSingleton()->GameIsPaused() : false);
-    }
-
-#else
-    void LogState(RE::Actor*, MOD, RE::ActorValue, float) {}
-#endif
-
     // Before a fortify lapses the engine tops current up when it would leave Health at 1 or less or Magicka and Stamina below 0, through one call site that does nothing else (id 35084 +0x9E, 1.6.1170 and 1.7.104)
     [[nodiscard]] float LapseTopUp(RE::Actor* a_actor, RE::ActorValue a_av, float a_delta, const DamageChange& a_topUp,
                                    float a_current)
@@ -439,8 +375,6 @@ namespace
         if (!a_actor) {
             return false;
         }
-
-        LogState(a_actor, a_mod, a_av, a_delta);
 
         if (g_mode.load() == Fortify::Mode::kOff) {
             // Still watched while off, read only, so leaving Off does not start from a stale penalty
@@ -565,37 +499,6 @@ namespace
         static inline REL::Relocation<decltype(thunk)> func;
     };
 
-#ifdef FF_DEBUG_PANEL
-    std::atomic_int32_t g_snapsRemaining{ 0 };
-    std::chrono::steady_clock::time_point g_lastSnap{};
-
-    // Time sampled as well as event driven, so a cause that stops the function being called still leaves evidence
-    struct SnapshotTickHook
-    {
-        static void thunk()
-        {
-            func();
-
-            if (g_snapsRemaining <= 0) {
-                return;
-            }
-            if (auto* ui = RE::UI::GetSingleton(); !ui || ui->GameIsPaused()) {
-                return;
-            }
-
-            const auto now = std::chrono::steady_clock::now();
-            if (std::chrono::duration<float>(now - g_lastSnap).count() < 0.5f) {
-                return;
-            }
-            g_lastSnap = now;
-            --g_snapsRemaining;
-            LogSnapshot("tick");
-        }
-
-        static inline REL::Relocation<decltype(thunk)> func;
-    };
-#endif
-
     // Addresses from virt-x/FortifyAttributeFix/plugin.cpp
     void ResolvePublishedSites()
     {
@@ -709,6 +612,7 @@ namespace
         return std::format("It calls into {}.", module.name.empty() ? "an unnamed module" : module.name);
     }
 
+    // In memory and before the hooks, since write_call rewrites the displacements read here and Steam's DRM leaves .text encrypted on disk
     void ScanCallSitesNow()
     {
         const auto target = REL::Relocation<std::uintptr_t>(RELOCATION_ID(37523, 38468)).address();
@@ -741,7 +645,7 @@ namespace
                 continue;
             }
 
-            Fortify::CallSite site{ here - base, here, false, false };
+            CallSite site{ here - base, here, false, false };
             for (const auto published : g_publishedSites) {
                 if (published == here) site.published = true;
             }
@@ -774,23 +678,6 @@ namespace
 
 namespace Fortify
 {
-    std::vector<CallSite> GetCallSites()
-    {
-        return g_callSites;
-    }
-
-    void StartStateLog([[maybe_unused]] std::int32_t a_samples)
-    {
-#ifdef FF_DEBUG_PANEL
-        g_stateLogRemaining = a_samples;
-        g_snapsRemaining = a_samples / 4;
-        g_lastSnap = {};
-        LogSnapshot("armed");
-        logger::info("Fortify: logging the next {} modifier changes on the player, and sampling twice a second.",
-                     a_samples);
-#endif
-    }
-
     void LogStats()
     {
         logger::info("Fortify: {} modifier changes seen, {} corrected, {} left alone, {} already held by the caller, {} deaths prevented.",
@@ -828,15 +715,6 @@ namespace Fortify
         // Detected by module, as aers/EngineFixesSkyrim64/src/fixes/bslightingshader_parallax_bug.h:48 does
         g_survivalLoaded = REX::W32::GetModuleHandleA("SurvivalModeImproved.dll") != nullptr;
         logger::info("Fortify: Survival Mode Improved {}.", g_survivalLoaded.load() ? "loaded, the player's fortifies are measured above its penalties" : "not loaded");
-
-#ifdef FF_DEBUG_PANEL
-        // Only the debug build polls, and only while a burst is armed. The published offsets here are SE and AE
-        if (!REL::Module::IsVR()) {
-            REL::Relocation<std::uintptr_t> mainUpdate{ RELOCATION_ID(35565, 36564), REL::Relocate(0x748, 0xC26) };
-            SnapshotTickHook::func = SKSE::GetTrampoline().write_call<5>(mainUpdate.address(), SnapshotTickHook::thunk);
-            logger::info("Fortify: snapshot tick hooked, idle until a burst is armed.");
-        }
-#endif
     }
 
     void OnGameLoaded(bool a_fromSave)
@@ -894,10 +772,5 @@ namespace Fortify
     void SetPlayerOnly(bool a_value)
     {
         g_playerOnly = a_value;
-    }
-
-    Stats GetStats()
-    {
-        return { g_seen.load(), g_corrected.load(), g_restores.load(), g_deaths.load(), g_precompensated.load() };
     }
 }

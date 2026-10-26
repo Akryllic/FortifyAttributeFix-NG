@@ -82,10 +82,10 @@ target_include_directories(
   ${CMAKE_CURRENT_SOURCE_DIR}/include
 )
 
-# Two published builds from one source tree. OFF compiles the Debug page out entirely rather than
-# hiding it, so the release download carries no debug UI at all.
-#   cmake --preset release -DFF_DEBUG_PANEL=ON
-option(FF_DEBUG_PANEL "Include the SKSE Menu Framework Debug page" OFF)
+# Two published builds from one source tree. OFF compiles the caller counters out entirely rather
+# than switching them off, so the release download carries no debug code at all.
+#   cmake --preset debugpanel
+option(FF_DEBUG_PANEL "Include the per-site and caller counters and a PDB" OFF)
 if(FF_DEBUG_PANEL)
   target_compile_definitions(${PROJECT_NAME} PRIVATE FF_DEBUG_PANEL)
 
@@ -106,7 +106,7 @@ if(FF_DEBUG_PANEL)
       VERBATIM)
   endif()
 
-  message(STATUS "${PRODUCT_NAME}: DEBUG build, Debug page and PDB included")
+  message(STATUS "${PRODUCT_NAME}: DEBUG build, caller counters and PDB included")
 else()
   # A release dll sitting beside a debug pdb is the same wrong-symbols trap in reverse
   if(IS_DIRECTORY "${MOD_FOLDER}")
@@ -117,7 +117,7 @@ else()
       VERBATIM)
   endif()
 
-  message(STATUS "${PRODUCT_NAME}: RELEASE build, no debug UI")
+  message(STATUS "${PRODUCT_NAME}: RELEASE build, no debug code")
 endif()
 
 if(IS_DIRECTORY "${MOD_FOLDER}")

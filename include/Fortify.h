@@ -1,8 +1,5 @@
 #pragma once
 
-#include <cstdint>
-#include <vector>
-
 /// The fix itself.
 /// Skyrim stores a current attribute as base + permanent + temporary + damage, where damage is a negative number.
 /// A fortify raises a modifier, the permanent one on the player and the temporary one on an NPC, so it raises current as well as maximum.
@@ -38,33 +35,4 @@ namespace Fortify
 
     /// @brief Write the running totals to the log. Called on every load and every mode change.
     void LogStats();
-
-    struct Stats
-    {
-        std::uint64_t seen{ 0 };
-        std::uint64_t corrected{ 0 };
-        std::uint64_t restoresLeftAlone{ 0 };
-        std::uint64_t deathsPrevented{ 0 };
-        std::uint64_t precompensated{ 0 };
-    };
-
-    [[nodiscard]] Stats GetStats();
-
-    struct CallSite
-    {
-        /// SkyrimSE.exe+offset, for logs and the panel.
-        std::uintptr_t offset{ 0 };
-        std::uintptr_t address{ 0 };
-        /// One of the five the original mod publishes.
-        bool published{ false };
-        bool hooked{ false };
-    };
-
-    /// @brief Every call to the modifier function found in .text, and whether we hook it.
-    /// @note Scanned once during Install, before the hooks go in, because write_call rewrites the displacements it would read. The retail exe cannot be scanned on disk; Steam's DRM leaves .text encrypted there.
-    [[nodiscard]] std::vector<CallSite> GetCallSites();
-
-    /// @brief Log the player's full attribute state on the next @p a_samples modifier changes.
-    /// @note Rides the traffic already passing through the hooks, so it needs no tick of its own.
-    void StartStateLog(std::int32_t a_samples);
 }
