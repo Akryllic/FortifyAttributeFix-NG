@@ -54,7 +54,8 @@ namespace
     // Left room for more a couple more call sites
     constexpr std::size_t MAX_CALL_SITES = 8;
 
-    // Small enough to be invisible, large enough not to vanish into float noise. Applied in the safe direction first, so the intermediate state is never more damaged than the corrected one
+    // Small enough nobody notices it, big enough not to get lost in float rounding
+    // It heals first and takes it back after, so while it runs the actor is never lower than the fix left them
     constexpr float ARM_NUDGE = 0.05f;
 
     // Not REX::W32::MAX_PATH, the Windows macro expands first
@@ -84,7 +85,7 @@ namespace
         std::uintptr_t base{ 0 };
     };
 
-    // A zero base means no mapped allocation at all, an empty name an allocation that is not an image
+    // Base is 0 when the address isn't mapped at all, and the name is empty when it's mapped but isn't a module
     [[nodiscard]] ModuleHit ModuleOf(std::uintptr_t a_address)
     {
         REX::W32::MEMORY_BASIC_INFORMATION info{};
@@ -119,7 +120,7 @@ namespace
     std::mutex g_callersLock;
     std::unordered_map<std::string, CallerRow> g_callers;
 
-    // Read off the stack, so a change no plugin owns up to still names the module that asked for it
+    // Reads the caller off the stack, so we can see which module asked for a change even when nothing logs it
     void RecordCaller(std::size_t a_site, RE::Actor* a_actor, MOD a_mod, RE::ActorValue a_av, float a_delta)
     {
         static const auto self = ModuleOf(reinterpret_cast<std::uintptr_t>(&ModuleOf)).base;
@@ -131,14 +132,14 @@ namespace
         std::string chain;
         bool siteMatched = false;
         int kept = 0;
-        // Stops after code outside any image, where the unwinder assumes a leaf and later frames are unreliable
+        // Stops after the first frame that isn't in any module, the stack walk can't be trusted past it
         for (std::uint16_t i = 0; i < captured && kept < 4; ++i) {
             const auto address = reinterpret_cast<std::uintptr_t>(frames[i]);
             const auto module = ModuleOf(address);
             if (module.base == self) {
                 continue;
             }
-            // The first frame past our own should be the instruction after the hooked call, which proves which site fired
+            // The first frame that isn't ours should be right after the hooked call, which tells us which site fired
             if (kept == 0) {
                 siteMatched = module.base == exe && a_site < g_callSites.size() && address == g_callSites[a_site].address + 5;
             }
@@ -192,7 +193,7 @@ namespace
     }
 #endif
 
-    // Only the three pooled attributes carry a damage modifier that can outlive its maximum
+    // Only health, magicka and stamina have damage that can end up bigger than their maximum
     [[nodiscard]] RE::Modifiers* SlotsFor(RE::Actor* a_actor, RE::ActorValue a_av)
     {
         auto& data = a_actor->GetActorRuntimeData();
@@ -219,7 +220,7 @@ namespace
         [[nodiscard]] float Maximum() const { return current - damage; }
     };
 
-    // A raw slot write leaves the derived value cached, so the engine keeps handing out the old one until something recalculates (Styyx1/ResurrectionAPI-po3Clib/src/main.cpp:96-121)
+    // Writing the slot directly leaves the old value cached, and the engine keeps handing it out until something recalculates (Styyx1/ResurrectionAPI-po3Clib/src/main.cpp:96-121)
     void InvalidateCached(RE::Actor* a_actor, RE::ActorValue a_av)
     {
         using func_t = void(RE::Actor*, RE::ActorValue);
@@ -227,15 +228,16 @@ namespace
         func(a_actor, a_av);
     }
 
-    // The whole correction, as a pure function of the two snapshots. Each mode is one branch, and none of them can reach anything but the damage slot
+    // Works out what damage should be for each mode, the caller does the actual write
     [[nodiscard]] float WantedDamage(const Snapshot& a_before, float a_maxAfter)
     {
         const float maxBefore = a_before.Maximum();
 
-        // A ravage plus accumulated damage can put the engine's arithmetic below zero, and preserving that would write back a value the actor never actually held
+        // A ravage on top of existing damage can push current below 0, and keeping that would give back a number the actor never actually had
         const float beforeCurrent = std::max(0.0f, a_before.current);
 
-        // Only on the way up, so an effect that reapplies itself on a tick cannot keep refilling the actor, and so a ravage lowering the maximum still falls through to preservation
+        // Restore only fills you up when the max goes up
+        // A fortify ending or a ravage dropping the max falls through to the normal path below
         if (g_mode.load() == Fortify::Mode::kRestore && a_maxAfter > maxBefore) {
             return 0.0f;
         }
@@ -251,9 +253,8 @@ namespace
         return std::min(0.0f, beforeCurrent - a_maxAfter);
     }
 
-    // The call sites run inside the engine's modifier function before it applies anything, so the compensation lands first and the value never computes below zero
-
-    // A fortify lives above zero and a ravage below it, so only movement in positive territory is one. Handing a ravage's points back as it leaves is vanilla behaviour, not a bug to correct
+    // Fortifies push the modifier above 0 and ravages push it below, so only the part above 0 counts as a fortify
+    // A ravage giving its points back when it ends is vanilla, so that's left alone
     [[nodiscard]] float FortifyPart(float a_before, float a_after)
     {
         return std::max(0.0f, a_after) - std::max(0.0f, a_before);
@@ -282,7 +283,7 @@ namespace
         }
     }
 
-    // A resize can still be pending across a save or a mode change, and holding one real cold step instead costs little
+    // Assume SMI still has a resize coming after a load or a mode change, if it doesn't we just hold one real penalty step
     void AssumeResizePending()
     {
         for (auto& fortified : g_penaltyFortified) {
@@ -305,7 +306,7 @@ namespace
         std::atomic_bool* fortified{ nullptr };
     };
 
-    // The penalty is applied to the permanent modifier, where the player's fortifies land too, so zero is measured from minus it (colinswrath/Survival-Mode-Improved-SKSE/include/AvPenaltyManager.h:282)
+    // SMI puts its penalty on the permanent modifier, same place the player's fortifies go, so 0 is measured from minus the penalty (colinswrath/Survival-Mode-Improved-SKSE/include/AvPenaltyManager.h:282)
     [[nodiscard]] PenaltyLine SurvivalPenalty(RE::Actor* a_actor, MOD a_mod, RE::ActorValue a_av, float a_delta)
     {
         const auto track = TrackFor(a_av);
@@ -316,21 +317,21 @@ namespace
         const float now = a_actor->AsActorValueOwner()->GetActorValue(track.variable);
         auto* fortified = now > 0.0f ? track.fortified : nullptr;
 
-        // Its maximum counts the temporary modifier too, so a temporary fortify still resizes the penalty (colinswrath/Survival-Mode-Improved-SKSE/include/AvPenaltyManager.h:232-236)
+        // SMI's maximum includes the temporary modifier too, so a temporary fortify still resizes the penalty (colinswrath/Survival-Mode-Improved-SKSE/include/AvPenaltyManager.h:232-236)
         if (a_mod != MOD::kPermanent) {
             return { 0.0f, 0.0f, fortified };
         }
 
         const float last = track.seen->exchange(now);
 
-        // Unseen since a load or a mode change, so the variable may have moved without a call passing through here
+        // Haven't seen it since the game loaded, so it could have moved without going through here
         if (!track.known->exchange(true)) {
             return { now, now, fortified };
         }
 
-        // The new penalty is written before the call that applies it, so a variable that moved by exactly this delta is that call (colinswrath/Survival-Mode-Improved-SKSE/include/AvPenaltyManager.h:275,281-282)
+        // SMI writes the new penalty before it applies it, so if the variable moved by exactly this delta then this call is SMI's (colinswrath/Survival-Mode-Improved-SKSE/include/AvPenaltyManager.h:275,281-282)
         if (std::abs(last - (now + a_delta)) < 0.001f) {
-            // The first growth after a fortify is the penalty resizing to the fortified maximum, so it is held as part of that fortify (colinswrath/Survival-Mode-Improved-SKSE/include/AvPenaltyManager.h:257,272)
+            // The first time it grows after a fortify is SMI resizing to the new max, so it counts as part of that fortify (colinswrath/Survival-Mode-Improved-SKSE/include/AvPenaltyManager.h:257,272)
             if (std::abs(a_delta) >= 0.001f && track.fortified->exchange(false) && a_delta < 0.0f) {
                 return { now + a_delta, now + a_delta };
             }
@@ -339,7 +340,8 @@ namespace
         return { now, now, fortified };
     }
 
-    // Before a fortify lapses the engine tops current up when it would leave Health at 1 or less or Magicka and Stamina below 0, through one call site that does nothing else (id 35084 +0x9E, 1.6.1170 and 1.7.104)
+    // Right before a fortify ends, the engine tops current up if it would leave health at 1 or less, or magicka and stamina below 0
+    // It does that through one call site that does nothing else (id 35084 +0x9E, 1.6.1170 and 1.7.104)
     [[nodiscard]] float LapseTopUp(RE::Actor* a_actor, RE::ActorValue a_av, float a_delta, const DamageChange& a_topUp,
                                    float a_current)
     {
@@ -353,7 +355,7 @@ namespace
         return std::abs(a_current + a_delta) < 0.001f ? a_topUp.delta : 0.0f;
     }
 
-    // Then, for the player's Health only, the effect itself restores enough that a lethal lapse leaves exactly 1 (id 35086 +0x110, 1.6.1170 and 1.7.104)
+    // After that, for the player's health only, the effect itself gives back enough that a lethal lapse leaves you on exactly 1 (id 35086 +0x110, 1.6.1170 and 1.7.104)
     [[nodiscard]] float EngineLift(RE::Actor* a_actor, MOD a_mod, RE::ActorValue a_av, float a_delta,
                                    const DamageChange& a_previous, float a_current)
     {
@@ -369,7 +371,7 @@ namespace
         return a_previous.delta;
     }
 
-    // Returns whether it wrote, so the caller knows to arm regeneration afterwards
+    // Returns true if it wrote, so the caller knows to kick regen afterwards
     bool OnModifierChange(RE::Actor* a_actor, MOD a_mod, RE::ActorValue a_av, float a_delta, bool a_topUpSite)
     {
         if (!a_actor) {
@@ -377,7 +379,7 @@ namespace
         }
 
         if (g_mode.load() == Fortify::Mode::kOff) {
-            // Still watched while off, read only, so leaving Off does not start from a stale penalty
+            // Keep tracking SMI's penalty while Off, so switching back on doesn't start from an old value
             if (a_mod == MOD::kPermanent) {
                 static_cast<void>(SurvivalPenalty(a_actor, a_mod, a_av, a_delta));
             }
@@ -416,7 +418,7 @@ namespace
             return false;
         }
 
-        // A damage change of the same size right before a rise means the caller manages current, so correcting it again takes the rise twice (colinswrath/Survival-Mode-Improved-SKSE/include/AvPenaltyManager.h:277-282)
+        // If damage changed by the same amount right before a rise, the caller is handling current itself, and fixing it again would take the rise off twice (colinswrath/Survival-Mode-Improved-SKSE/include/AvPenaltyManager.h:277-282)
         if (rise > 0.0f && previous.actor == a_actor && previous.av == a_av && std::abs(std::abs(previous.delta) - std::abs(a_delta)) < 0.001f) {
             ++g_precompensated;
             return false;
@@ -439,7 +441,7 @@ namespace
         float wanted = WantedDamage(before_, maxBefore + rise);
 
         if (lift > 0.0f) {
-            // Never below what the engine leaves, because the part of a lapse below zero stays vanilla
+            // Never lower than what the engine leaves you on, the part of a lapse below 0 stays vanilla
             wanted = std::max(wanted, damage);
             logger::info("{} av {}: max {:.1f} -> {:.1f}, current {:.1f} -> {:.1f}, the engine had topped it up to {:.1f} first.",
                          Util::Who(a_actor), static_cast<int>(a_av), maxBefore, maxBefore + a_delta, before_.current,
@@ -457,7 +459,7 @@ namespace
             return false;
         }
 
-        // Raw rather than through ModActorValue, which would re-enter the function this hook sits inside
+        // Direct write, ModActorValue would call back into the function we're hooked inside
         slots->modifiers[MOD::kDamage] = wanted;
         InvalidateCached(a_actor, a_av);
         ++g_corrected;
@@ -475,11 +477,14 @@ namespace
                 RecordCaller(Index, a_actor, a_mod, a_av, a_delta);
             }
 #endif
+            // Runs before the engine applies the change, so the fix is already in when a fortify ends and current never dips below 0 on the way
             const bool wrote = OnModifierChange(a_actor, a_mod, a_av, a_delta, Index == g_topUpSite.load());
             func(a_actor, a_mod, a_av, a_delta, a_source);
 
-            // A raw write buys the number without the engine's bookkeeping, so regeneration is never armed. The round trip nets to zero while making two real calls
-            // After the original, because ModActorValue re-enters the function this hook sits inside
+            // The direct write skips the engine's bookkeeping, so regen never starts on its own
+            // Nudging damage up and back down is two real calls, and that gets regen going
+            // At full the heal clamps at 0, so the actor ends up 0.05 down
+            // It has to happen after the original call, ModActorValue goes back into the function we're hooked inside
             if (wrote && a_actor) {
                 auto* owner = a_actor->AsActorValueOwner();
                 owner->ModActorValue(MOD::kDamage, a_av, ARM_NUDGE);
@@ -571,7 +576,7 @@ namespace
                 continue;
             }
 
-            // An id plus a hand written offset, so a game update can leave these pointing at anything
+            // These are an id plus a hand written offset, so a game update can leave them pointing at anything
             if (!IsCallSite(published)) {
                 logger::error("Fortify: published site SkyrimSE.exe+{:X} is not a call instruction, refusing to hook it.",
                               published - base);
@@ -604,7 +609,8 @@ namespace
         return std::format("It calls into {}.", module.name.empty() ? "an unnamed module" : module.name);
     }
 
-    // In memory and before the hooks, since write_call rewrites the displacements read here and Steam's DRM leaves .text encrypted on disk
+    // Reads the code from memory, Steam's DRM keeps .text encrypted in the exe on disk
+    // Has to run before the hooks go in, write_call changes the call targets it reads
     void ScanCallSitesNow()
     {
         const auto target = REL::Relocation<std::uintptr_t>(RELOCATION_ID(37523, 38468)).address();
@@ -616,7 +622,7 @@ namespace
             return;
         }
 
-        // A resolved address outside executable code means the wrong address library answered (ItzIvy05/AutomaticallyLoweredWeapons/src/LowerWeapon.cpp:361-367)
+        // If the address lands outside the code section, the wrong address library answered (ItzIvy05/AutomaticallyLoweredWeapons/src/LowerWeapon.cpp:383-389)
         if (target < begin || target >= begin + size) {
             logger::error("Fortify: the modifier function resolved to {:X}, outside .text. Not scanning.", target);
             return;
@@ -677,7 +683,8 @@ namespace Fortify
 
     void Install()
     {
-        // Hooking what is verified rather than the original mod's addresses, four of which carry an SE id in VariantID's VR slot and resolve to a raw module offset there
+        // Hooks the call sites the scan finds, the original mod's addresses are only a fallback on AE when the scan comes up short
+        // Four of those addresses put an SE id in VariantID's VR slot and turn into a raw module offset on VR
         ResolvePublishedSites();
         ScanCallSitesNow();
         HookCallSites();
@@ -700,7 +707,7 @@ namespace Fortify
         }
         logger::info("Fortify: lapse top-up site {}.", g_topUpSite.load() < MAX_CALL_SITES ? "hooked" : "not found");
 
-        // Detected by module, as aers/EngineFixesSkyrim64/src/fixes/bslightingshader_parallax_bug.h:48 does
+        // Checks for SMI's DLL being loaded, same way aers/EngineFixesSkyrim64/src/fixes/bslightingshader_parallax_bug.h:48 checks for a module
         g_survivalLoaded = REX::W32::GetModuleHandleA("SurvivalModeImproved.dll") != nullptr;
         logger::info("Fortify: Survival Mode Improved {}.", g_survivalLoaded.load() ? "loaded, the player's fortifies are measured above its penalties" : "not loaded");
     }
@@ -716,7 +723,8 @@ namespace Fortify
             return;
         }
 
-        // SMI only ever applies the change from its saved variable, so the saved permanent modifier already carries it and its next call starts from the variable as it reads now (colinswrath/Survival-Mode-Improved-SKSE/include/AvPenaltyManager.h:271,275,282)
+        // SMI only ever applies the difference from its saved variable, so the save already has its penalty in the permanent modifier (colinswrath/Survival-Mode-Improved-SKSE/include/AvPenaltyManager.h:271,275,282)
+        // That means its next change starts from the variable as it reads right now
         constexpr RE::ActorValue POOLED[]{ RE::ActorValue::kHealth, RE::ActorValue::kStamina, RE::ActorValue::kMagicka };
         for (const auto av : POOLED) {
             const auto track = TrackFor(av);

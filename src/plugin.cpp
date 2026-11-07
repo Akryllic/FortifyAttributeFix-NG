@@ -44,7 +44,9 @@ SKSEPluginLoad(const SKSE::LoadInterface* a_skse)
     SetupLog();
     logger::info("Plugin loaded, {} build", BUILD_NAME);
 
-    // Sized once for every write_call, since a later request is ignored. Logging stays with SetupLog, which Init would otherwise replace. ItzIvy05/GoToBed/src/plugin.cpp:15
+    // Trampoline gets sized here in Init for every write_call, same as ItzIvy05/GoToBed/src/plugin.cpp:15
+    // Asking for more later does nothing, CommonLibSSE-NG only sets it up once (CommonLibSSE-NG/src/SKSE/API.cpp:138-139)
+    // log = false keeps our SetupLog logger, Init would replace it otherwise
     SKSE::Init(a_skse, { .log = false, .trampoline = true, .trampolineSize = 1 << 7 });
 
     const auto messaging = SKSE::GetMessagingInterface();

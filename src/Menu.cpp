@@ -76,7 +76,7 @@ namespace Menu
 {
     void Register()
     {
-        // Connected under the plugin's own name, then registered once, as ItzIvy05/Show-Player-In-Inventory/src/SettingsUI.cpp:311-317 does
+        // Connect under our plugin name, then register the page once, same as ItzIvy05/Show-Player-In-Inventory/src/SettingsUI.cpp:436-442
         if (!FUCK::Connect(SKSE::GetPluginName().data())) {
             logger::info("Menu: FLICK not connected, no menu registered.");
             return;
